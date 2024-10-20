@@ -229,6 +229,7 @@ int fork(void) {
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
+  
 
   // Allocate process.
   if ((np = allocproc()) == 0) {
@@ -261,6 +262,8 @@ int fork(void) {
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  np->mask = p->mask;
 
   release(&np->lock);
 
@@ -619,3 +622,33 @@ void procdump(void) {
     printf("\n");
   }
 }
+
+uint64 nproc(void) {
+  uint64 num = 0;
+  struct proc* p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    if (p->state == UNUSED) {
+      num++;
+    }
+  }
+  return num;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
