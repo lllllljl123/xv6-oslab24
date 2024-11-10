@@ -1,0 +1,297 @@
+diff --git a/Makefile b/Makefile
+index 369a310..348a13f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -164,6 +164,9 @@ UPROGS=\
+ 	$U/_zombie\
+ 	$U/_waittest\
+ 	$U/_exittest\
++	$U/_trace\
++	$U/_sysinfotest\
++	$U/_sysinfo\
+ 
+ 
+ ifeq ($(LAB),trap)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index ecea5e6..5738b0f 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,7 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++uint64          free_mem(void);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -114,6 +115,7 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++uint64          nproc(void);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index dbb0305..9a5848a 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -68,3 +68,19 @@ void *kalloc(void) {
+   if (r) memset((char *)r, 5, PGSIZE);  // fill with junk
+   return (void *)r;
+ }
++
++
++uint64 free_mem(void)
++{
++  struct run *r;
++  uint64 num = 0;
++  acquire(&kmem.lock);
++  r = kmem.freelist;
++  while (r)
++  {
++    num++;
++    r = r->next;
++  }
++  release(&kmem.lock);
++  return num * PGSIZE;
++}
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 1607145..754189e 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -229,6 +229,7 @@ int fork(void) {
+   int i, pid;
+   struct proc *np;
+   struct proc *p = myproc();
++  
+ 
+   // Allocate process.
+   if ((np = allocproc()) == 0) {
+@@ -262,6 +263,8 @@ int fork(void) {
+ 
+   np->state = RUNNABLE;
+ 
++  np->mask = p->mask;
++
+   release(&np->lock);
+ 
+   return pid;
+@@ -619,3 +622,33 @@ void procdump(void) {
+     printf("\n");
+   }
+ }
++
++uint64 nproc(void) {
++  uint64 num = 0;
++  struct proc* p;
++  for (p = proc; p < &proc[NPROC]; p++) {
++    if (p->state == UNUSED) {
++      num++;
++    }
++  }
++  return num;
++}
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
+diff --git a/kernel/proc.h b/kernel/proc.h
+index 9c16ea7..d732a20 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -93,6 +93,7 @@ struct proc {
+   int killed;                  // If non-zero, have been killed
+   int xstate;                  // Exit status to be returned to parent's wait
+   int pid;                     // Process ID
++  int mask;                    // Mask
+ 
+   // these are private to the process, so p->lock need not be held.
+   uint64 kstack;               // Virtual address of kernel stack
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 4c97875..753644f 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -89,6 +89,9 @@ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
+ extern uint64 sys_rename(void);
++extern uint64 sys_trace(void);
++extern uint64 sys_sysinfo(void);
++
+ 
+ static uint64 (*syscalls[])(void) = {
+     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
+@@ -96,18 +99,39 @@ static uint64 (*syscalls[])(void) = {
+     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
+     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
+     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
+-    [SYS_close] sys_close, [SYS_rename] sys_rename,
++    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_trace] sys_trace,   [SYS_sysinfo] sys_sysinfo,
+ };
+ 
+-void syscall(void) {
++static char *syscall_names[] = {
++  "", "fork", "exit", "wait", "pipe", 
++  "read", "kill", "exec", "fstat", "chdir", 
++  "dup", "getpid", "sbrk", "sleep", "uptime", 
++  "open", "write", "mknod", "unlink", "link", 
++  "mkdir", "close", "trace","sysinfo"};
++
++void syscall(void)
++{
+   int num;
+   struct proc *p = myproc();
+ 
+-  num = p->trapframe->a7;
++  num = p->trapframe->a7; 
+   if (num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+-    p->trapframe->a0 = syscalls[num]();
++    int retval = syscalls[num]();
++    if ((1 << num) & p->mask) {
++      int arg0 = p->trapframe->a0;
++      if (num == SYS_trace) {
++        printf("%d: sys_trace(%d) -> %d\n", p->pid, arg0, retval);
++      } else {
++        printf("%d: sys_%s(%d) -> %d\n", p->pid, syscall_names[num], arg0, retval);
++      }
++    }
++    p->trapframe->a0 = retval; 
+   } else {
+     printf("%d %s: unknown sys call %d\n", p->pid, p->name, num);
+     p->trapframe->a0 = -1;
+   }
+ }
++
++
++
++
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 6998f87..dab9906 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -21,3 +21,6 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_rename 22
++#define SYS_trace  23
++#define SYS_sysinfo 24
++
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index a69071e..7ad75b7 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -6,6 +6,7 @@
+ #include "memlayout.h"
+ #include "spinlock.h"
+ #include "proc.h"
++#include "sysinfo.h"
+ 
+ uint64 sys_exit(void) {
+   int n;
+@@ -81,3 +82,36 @@ uint64 sys_rename(void) {
+   p->name[len] = '\0';
+   return 0;
+ }
++
++uint64 sys_trace(void){
++  int mask;
++
++  if(argint(0,&mask)<0){
++    return -1;
++  }
++
++  myproc()->mask=mask;
++  return 0;
++}
++
++
++uint64 sys_sysinfo(void)
++{
++  uint64 addr;
++  struct sysinfo info;
++  struct proc *p = myproc();
++  
++  if (argaddr(0, &addr) < 0)
++	  return -1;
++  info.freemem = free_mem();
++  info.nproc = nproc();
++
++  if (copyout(p->pagetable, addr, (char *)&info, sizeof(info)) < 0)
++    return -1;
++  
++  return 0;
++}
++
++
++
++
+diff --git a/user/sysinfo.c b/user/sysinfo.c
+new file mode 100644
+index 0000000..8e7a0fb
+--- /dev/null
++++ b/user/sysinfo.c
+@@ -0,0 +1,19 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/sysinfo.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++    if (argc != 1)
++    {
++        fprintf(2, "Usage: %s need not param\n", argv[0]);
++        exit(1);
++    }
++
++    struct sysinfo info;
++    sysinfo(&info);
++    printf("free space: %d\nused process: %d\n", info.freemem, info.nproc);
++    exit(0);
++}
+diff --git a/user/user.h b/user/user.h
+index ec47d9d..69c26f0 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -1,5 +1,6 @@
+ struct stat;
+ struct rtcdate;
++struct sysinfo;
+ 
+ // system calls
+ int fork(void);
+@@ -41,3 +42,5 @@ void free(void*);
+ int atoi(const char*);
+ int memcmp(const void *, const void *, uint);
+ void *memcpy(void *, const void *, uint);
++int trace(int);
++int sysinfo(struct sysinfo *);
+\ No newline at end of file
+diff --git a/user/usys.pl b/user/usys.pl
+index 3a2f6c4..840041f 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -37,3 +37,6 @@ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
+ entry("rename");
++entry("trace");
++entry("sysinfo");
++
