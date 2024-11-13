@@ -118,6 +118,7 @@ void            procdump(void);
 uint64          get_unused_procs(void);
 int             wait_sched(int *runable_time, int *running_time, int *sleep_time);
 int             set_priority(int, int);
+int             on_state_change(int cur_state, int nxt_state, struct proc *p);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
