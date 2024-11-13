@@ -10,12 +10,15 @@
 #define N 100000
 #define SZ 4096
 
+// test1中fork出多个进程，它们并发运行于不同CPU核心
+// 在获取内存的时候不同CPU核心可能会争抢锁
 void test1(void);
+
+// 在test2中测试所有空闲内存的获取和释放，由于test2未使用fork，只在单进程中测试。
 void test2(void);
 char buf[SZ];
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
   test1();
   test2();

@@ -261,7 +261,7 @@ clean:
 	$(UPROGS)
 
 # try to generate a unique GDB port
-GDBPORT = $(shell expr `id -u` % 5000 + 25000)
+GDBPORT = $(shell expr `id -u` % 5000 + 25100)
 # QEMU's gdb stub command line changed in 0.11
 QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
@@ -323,7 +323,7 @@ grade:
 	./grade-lab-$(LAB) $(GRADEFLAGS)
 
 diff:
-	git diff lock-base HEAD > commit.patch
+	git diff origin/lock HEAD > commit.patch
 format:
 	python3 clang-format.py
 

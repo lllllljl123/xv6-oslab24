@@ -23,6 +23,9 @@
 #include "fs.h"
 #include "buf.h"
 
+#define NBUCKETS 13
+
+// 修改bcache的结构 变成hash table
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];
@@ -33,9 +36,9 @@ struct {
   struct buf head;
 } bcache;
 
-void
-binit(void)
+void binit(void)
 {
+  // TODO: modify here
   struct buf *b;
 
   initlock(&bcache.lock, "bcache");
@@ -55,9 +58,8 @@ binit(void)
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
-static struct buf*
-bget(uint dev, uint blockno)
-{
+static struct buf* bget(uint dev, uint blockno) {
+  // TODO: 修改bget() 和 brelse() 使得缓存区并发的查询和释放不容易发生锁争用
   struct buf *b;
 
   acquire(&bcache.lock);
