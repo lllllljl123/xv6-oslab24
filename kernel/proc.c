@@ -471,18 +471,16 @@ void scheduler(void) {
     // Priority scheduling, iterating over max_p to find process with highest priority
     struct proc *highest_prio_proc = NULL;
     int highest_priority = 4;
-    // First find the process with the highest priority and is RUNNABLE
     for (p = proc; p < &proc[NPROC]; p++) {
       if (p->state == RUNNABLE && p->priority < highest_priority) {
         highest_priority = p->priority;
         highest_prio_proc = p;
       }
     }
-    
-    // If found such max_p, copy to p, and run it.
+
     if (highest_prio_proc) {
       acquire(&highest_prio_proc->lock);
-      if (highest_prio_proc->state == RUNNABLE) {  // Double-check state after acquiring the lock
+      if (highest_prio_proc->state == RUNNABLE) { 
         on_state_change(highest_prio_proc->state, RUNNING, highest_prio_proc);
 
         highest_prio_proc->state = RUNNING;
