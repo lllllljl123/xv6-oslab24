@@ -379,3 +379,55 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
+
+void print_prefix(int depth) {
+    printf("||");
+    for (int i = 0; i < depth; i++) {
+        printf("   ||");
+    }
+}
+
+void print_flags(pte_t pte) {
+    long BIT_MACRO[4] = {PTE_R, PTE_W, PTE_X, PTE_U};
+    char symbol[][4] = {"r", "w", "x", "u"};
+    for (int i = 0; i < 4; i++) {
+        printf("%s", (pte & BIT_MACRO[i]) ? symbol[i] : "-");
+    }
+}
+
+void print_pgtbl(pagetable_t pgtbl, int depth, long virt) {
+    virt <<= 9;  // Adjust virtual address for the current level
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pgtbl[i];
+        if (!(pte & PTE_V)) {
+            continue;  // Skip invalid entries
+        }
+
+        uint64 pa = PTE2PA(pte);
+
+        print_prefix(depth);
+
+        if (depth == 2) {
+            // For the last level of the page table
+            printf("idx: %d: va: %p -> pa: %p, flags: ", i, (void *)(((virt + i) << 12)), (void *)pa);
+        } else {
+            printf("idx: %d: pa: %p, flags: ", i, (void *)pa);
+        }
+
+        print_flags(pte);
+        printf("\n");
+
+        // Recursively print subpage table if no read/write/execute flags are set
+        if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+            print_pgtbl((pagetable_t)pa, depth + 1, virt + i);
+        }
+    }
+}
+
+
+// Definition of vmprint function
+void vmprint(pagetable_t pgtbl) {
+    printf("page table %p\n", pgtbl);
+    // Recursively print the page table entries and their corresponding physical addresses
+    print_pgtbl(pgtbl, 0, 0L);
+}
