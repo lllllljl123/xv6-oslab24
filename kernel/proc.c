@@ -18,8 +18,11 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
+pagetable_t create_kernel_pagetable(void);
 
 extern char trampoline[];  // trampoline.S
+extern pagetable_t kernel_pagetable;
+
 
 // initialize the proc table at boot time.
 void procinit(void) {
@@ -34,6 +37,8 @@ void procinit(void) {
     // guard page.
     char *pa = kalloc();
     if (pa == 0) panic("kalloc");
+    // 保存物理地址到进程控制块（PCB）的新成员 kstack_pa
+    p->kstack_pa = (uint64)pa;
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
@@ -103,6 +108,20 @@ found:
     return 0;
   }
 
+  p->k_pagetable = create_kernel_pagetable();
+  if (p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // 将内核栈的物理地址映射到进程的内核页表中
+  if (mappages(p->k_pagetable, p->kstack, PGSIZE, p->kstack_pa, PTE_R | PTE_W) != 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if (p->pagetable == 0) {
@@ -120,6 +139,23 @@ found:
   return p;
 }
 
+void free_kernel_pagetable(pagetable_t pagetable) {
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pagetable[i];
+        if (pte & PTE_V) {
+            uint64 child = PTE2PA(pte);
+            if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+                // 递归释放下一级页表
+                free_kernel_pagetable((pagetable_t)child);
+                pagetable[i] = 0;
+            }
+        }
+    }
+    // 释放当前页表本身
+    kfree((void *)pagetable);
+}
+
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -127,6 +163,7 @@ static void freeproc(struct proc *p) {
   if (p->trapframe) kfree((void *)p->trapframe);
   p->trapframe = 0;
   if (p->pagetable) proc_freepagetable(p->pagetable, p->sz);
+  if (p->k_pagetable)free_kernel_pagetable(p->k_pagetable);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -428,6 +465,14 @@ void scheduler(void) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+        // 切换到选定的进程页表
+        if (p->k_pagetable != 0) {
+          w_satp(MAKE_SATP(p->k_pagetable));
+          sfence_vma();
+        } else {
+          panic("scheduler: process has no kernel page table");
+        }
+
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
@@ -435,6 +480,8 @@ void scheduler(void) {
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
 
         found = 1;
       }
@@ -442,6 +489,8 @@ void scheduler(void) {
     }
 #if !defined(LAB_FS)
     if (found == 0) {
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();
       intr_on();
       asm volatile("wfi");
     }

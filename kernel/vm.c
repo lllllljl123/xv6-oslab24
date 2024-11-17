@@ -104,6 +104,12 @@ void kvmmap(uint64 va, uint64 pa, uint64 sz, int perm) {
   if (mappages(kernel_pagetable, va, sz, pa, perm) != 0) panic("kvmmap");
 }
 
+void kvmmap_with_table(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+    if (mappages(pagetable, va, sz, pa, perm) != 0)
+        panic("kvmmap_with_table");
+}
+
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -424,10 +430,40 @@ void print_pgtbl(pagetable_t pgtbl, int depth, long virt) {
     }
 }
 
-
 // Definition of vmprint function
 void vmprint(pagetable_t pgtbl) {
     printf("page table %p\n", pgtbl);
     // Recursively print the page table entries and their corresponding physical addresses
     print_pgtbl(pgtbl, 0, 0L);
+}
+
+pagetable_t create_kernel_pagetable() {
+    // 分配一个页表，并清零
+    pagetable_t k_pagetable = (pagetable_t)kalloc();
+    if (k_pagetable == 0) {
+        panic("create_kernel_pagetable: out of memory");
+    }
+    memset(k_pagetable, 0, PGSIZE);
+
+    // 映射 UART
+    kvmmap_with_table(k_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+    // 映射 virtio 磁盘接口
+    kvmmap_with_table(k_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+    // 不映射 CLINT，避免地址重合问题
+
+    // 映射 PLIC
+    kvmmap_with_table(k_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+    // 映射内核文本部分（只读和可执行）
+    kvmmap_with_table(k_pagetable, KERNBASE, KERNBASE, (uint64)etext - KERNBASE, PTE_R | PTE_X);
+
+    // 映射内核数据部分和物理 RAM
+    kvmmap_with_table(k_pagetable, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+
+    // 映射 trampoline
+    kvmmap_with_table(k_pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+    return k_pagetable;
 }
