@@ -1,6 +1,6 @@
 
-# To compile and run with a lab solution, set the lab name in lab.mk
-# (e.g., LB=util).  Run make grade to test solution with the lab's
+# To compile and run with a lab solution, set the lab name in conf/lab.mk
+# (e.g., LAB=util).  Run make grade to test solution with the lab's
 # grade script (e.g., grade-lab-util).
 
 -include conf/lab.mk
@@ -10,12 +10,7 @@ U=user
 
 OBJS = \
   $K/entry.o \
-  $K/start.o \
-  $K/console.o \
-  $K/printf.o \
-  $K/uart.o \
   $K/kalloc.o \
-  $K/spinlock.o \
   $K/string.o \
   $K/main.o \
   $K/vm.o \
@@ -37,12 +32,19 @@ OBJS = \
   $K/plic.o \
   $K/virtio_disk.o
 
-ifeq ($(LAB),pgtbl)
-OBJS += \
-	$K/vmcopyin.o
+OBJS_KCSAN = \
+  $K/start.o \
+  $K/console.o \
+  $K/printf.o \
+  $K/uart.o \
+  $K/spinlock.o
+
+ifdef KCSAN
+OBJS_KCSAN += \
+	$K/kcsan.o
 endif
 
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),lock)
 OBJS += \
 	$K/stats.o\
 	$K/sprintf.o
@@ -53,7 +55,6 @@ ifeq ($(LAB),net)
 OBJS += \
 	$K/e1000.o \
 	$K/net.o \
-	$K/sysnet.o \
 	$K/pci.o
 endif
 
@@ -84,7 +85,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
+CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 
 ifdef LAB
 LABUPPER = $(shell echo $(LAB) | tr a-z A-Z)
@@ -94,12 +95,24 @@ endif
 CFLAGS += $(XCFLAGS)
 CFLAGS += -MD
 CFLAGS += -mcmodel=medany
-CFLAGS += -ffreestanding -fno-common -nostdlib -mno-relax
+# CFLAGS += -ffreestanding -fno-common -nostdlib -mno-relax
+CFLAGS += -fno-common -nostdlib
+CFLAGS += -fno-builtin-strncpy -fno-builtin-strncmp -fno-builtin-strlen -fno-builtin-memset
+CFLAGS += -fno-builtin-memmove -fno-builtin-memcmp -fno-builtin-log -fno-builtin-bzero
+CFLAGS += -fno-builtin-strchr -fno-builtin-exit -fno-builtin-malloc -fno-builtin-putc
+CFLAGS += -fno-builtin-free
+CFLAGS += -fno-builtin-memcpy -Wno-main
+CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 ifeq ($(LAB),net)
 CFLAGS += -DNET_TESTS_PORT=$(SERVERPORT)
+endif
+
+ifdef KCSAN
+CFLAGS += -DKCSAN
+KCSANFLAG = -fsanitize=thread -fno-inline
 endif
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -112,10 +125,16 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $K/kernel.ld $U/initcode
-	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $K/kernel $(OBJS) 
+$K/kernel: $(OBJS) $(OBJS_KCSAN) $K/kernel.ld $U/initcode
+	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $K/kernel $(OBJS) $(OBJS_KCSAN)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
+
+$(OBJS): EXTRAFLAG := $(KCSANFLAG)
+
+$K/%.o: $K/%.c
+	$(CC) $(CFLAGS) $(EXTRAFLAG) -c -o $@ $<
+
 
 $U/initcode: $U/initcode.S
 	$(CC) $(CFLAGS) -march=rv64g -nostdinc -I. -Ikernel -c $U/initcode.S -o $U/initcode.o
@@ -128,12 +147,12 @@ tags: $(OBJS) _init
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),lock)
 ULIB += $U/statistics.o
 endif
 
 _%: %.o $(ULIB)
-	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
+	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $^
 	$(OBJDUMP) -S $@ > $*.asm
 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
 
@@ -175,12 +194,18 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-	$U/_symlinktest\
 
 
 
 
-ifeq ($(LAB),$(filter $(LAB), pgtbl lock))
+ifeq ($(LAB),syscall)
+UPROGS += \
+	$U/_attack\
+	$U/_attacktest\
+	$U/_secret
+endif
+
+ifeq ($(LAB),lock)
 UPROGS += \
 	$U/_stats
 endif
@@ -213,10 +238,15 @@ $U/_uthread: $U/uthread.o $U/uthread_switch.o $(ULIB)
 	$(OBJDUMP) -S $U/_uthread > $U/uthread.asm
 
 ph: notxv6/ph.c
-	gcc -o ph -g -O2 notxv6/ph.c -pthread
+	gcc -o ph -g -O2 $(XCFLAGS) notxv6/ph.c -pthread
 
 barrier: notxv6/barrier.c
-	gcc -o barrier -g -O2 notxv6/barrier.c -pthread
+	gcc -o barrier -g -O2 $(XCFLAGS) notxv6/barrier.c -pthread
+endif
+
+ifeq ($(LAB),pgtbl)
+UPROGS += \
+	$U/_pgtbltest
 endif
 
 ifeq ($(LAB),lock)
@@ -231,10 +261,14 @@ UPROGS += \
 endif
 
 
+ifeq ($(LAB),mmap)
+UPROGS += \
+	$U/_mmaptest
+endif
 
 ifeq ($(LAB),net)
 UPROGS += \
-	$U/_nettests
+	$U/_nettest
 endif
 
 UEXTRA=
@@ -246,15 +280,18 @@ endif
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
 	mkfs/mkfs fs.img README $(UEXTRA) $(UPROGS)
 
+newfs.img: 
+	-mv -f fs.img fs.img.bk
+
 -include kernel/*.d user/*.d
 
-clean: 
-	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
+clean:
+	rm -rf *.tex *.dvi *.idx *.aux *.log *.ind *.ilg *.dSYM *.zip *.pcap \
 	*/*.o */*.d */*.asm */*.sym \
-	$U/initcode $U/initcode.out $K/kernel fs.img \
-	mkfs/mkfs .gdbinit \
-        $U/usys.S \
-	$(UPROGS)
+	$U/initcode $U/initcode.out $U/usys.S $U/_* \
+	$K/kernel \
+	mkfs/mkfs fs.img fs.img.bk .gdbinit __pycache__ xv6.out* \
+	ph barrier
 
 # try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
@@ -269,18 +306,25 @@ ifeq ($(LAB),fs)
 CPUS := 1
 endif
 
-FWDPORT = $(shell expr `id -u` % 5000 + 25999)
+FWDPORT1 = $(shell expr `id -u` % 5000 + 25999)
+FWDPORT2 = $(shell expr `id -u` % 5000 + 30999)
 
 QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 ifeq ($(LAB),net)
-QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT)-:2000 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
+QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT1)-:2000,hostfwd=udp::$(FWDPORT2)-:2001 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
 QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
 endif
 
-qemu: $K/kernel fs.img
+# makes a new fs.img
+qemu: newfs.img $K/kernel fs.img
+	$(QEMU) $(QEMUOPTS)
+
+# runs with existing fs.img, if present
+qemu-fs: $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
 
 .gdbinit: .gdbinit.tmpl-riscv
@@ -294,11 +338,6 @@ ifeq ($(LAB),net)
 # try to generate a unique port for the echo server
 SERVERPORT = $(shell expr `id -u` % 5000 + 25099)
 
-server:
-	python3 server.py $(SERVERPORT)
-
-ping:
-	python3 ping.py $(FWDPORT)
 endif
 
 ##
@@ -319,21 +358,10 @@ grade:
 	./grade-lab-$(LAB) $(GRADEFLAGS)
 
 ##
-## FOR web handin
+## FOR submissions
 ##
 
-
-WEBSUB := https://6828.scripts.mit.edu/2020/handin.py
-
-handin: tarball-pref myapi.key
-	@SUF=$(LAB); \
-	curl -f -F file=@lab-$$SUF-handin.tar.gz -F key=\<myapi.key $(WEBSUB)/upload \
-	    > /dev/null || { \
-		echo ; \
-		echo Submit seems to have failed.; \
-		echo Please go to $(WEBSUB)/ and upload the tarball manually.; }
-
-handin-check:
+submit-check:
 	@if ! test -d .git; then \
 		echo No .git directory, is this a git repository?; \
 		false; \
@@ -355,37 +383,7 @@ handin-check:
 		test "$$r" = y; \
 	fi
 
-UPSTREAM := $(shell git remote -v | grep -m 1 "xv6-labs-2020" | awk '{split($$0,a," "); print a[1]}')
+zipball: clean submit-check
+	git archive --verbose --format zip --output lab.zip HEAD
 
-tarball: handin-check
-	git archive --format=tar HEAD | gzip > lab-$(LAB)-handin.tar.gz
-
-tarball-pref: handin-check
-	@SUF=$(LAB); \
-	git archive --format=tar HEAD > lab-$$SUF-handin.tar; \
-	git diff $(UPSTREAM)/$(LAB) > /tmp/lab-$$SUF-diff.patch; \
-	tar -rf lab-$$SUF-handin.tar /tmp/lab-$$SUF-diff.patch; \
-	gzip -c lab-$$SUF-handin.tar > lab-$$SUF-handin.tar.gz; \
-	rm lab-$$SUF-handin.tar; \
-	rm /tmp/lab-$$SUF-diff.patch; \
-
-myapi.key:
-	@echo Get an API key for yourself by visiting $(WEBSUB)/
-	@read -p "Please enter your API key: " k; \
-	if test `echo "$$k" |tr -d '\n' |wc -c` = 32 ; then \
-		TF=`mktemp -t tmp.XXXXXX`; \
-		if test "x$$TF" != "x" ; then \
-			echo "$$k" |tr -d '\n' > $$TF; \
-			mv -f $$TF $@; \
-		else \
-			echo mktemp failed; \
-			false; \
-		fi; \
-	else \
-		echo Bad API key: $$k; \
-		echo An API key should be 32 characters long.; \
-		false; \
-	fi;
-
-
-.PHONY: handin tarball tarball-pref clean grade handin-check
+.PHONY: zipball clean grade submit-check

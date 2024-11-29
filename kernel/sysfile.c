@@ -24,8 +24,7 @@ argfd(int n, int *pfd, struct file **pf)
   int fd;
   struct file *f;
 
-  if(argint(n, &fd) < 0)
-    return -1;
+  argint(n, &fd);
   if(fd < 0 || fd >= NOFILE || (f=myproc()->ofile[fd]) == 0)
     return -1;
   if(pfd)
@@ -73,7 +72,9 @@ sys_read(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  argaddr(1, &p);
+  argint(2, &n);
+  if(argfd(0, 0, &f) < 0)
     return -1;
   return fileread(f, p, n);
 }
@@ -84,8 +85,10 @@ sys_write(void)
   struct file *f;
   int n;
   uint64 p;
-
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  
+  argaddr(1, &p);
+  argint(2, &n);
+  if(argfd(0, 0, &f) < 0)
     return -1;
 
   return filewrite(f, p, n);
@@ -110,7 +113,8 @@ sys_fstat(void)
   struct file *f;
   uint64 st; // user pointer to struct stat
 
-  if(argfd(0, 0, &f) < 0 || argaddr(1, &st) < 0)
+  argaddr(1, &st);
+  if(argfd(0, 0, &f) < 0)
     return -1;
   return filestat(f, st);
 }
@@ -126,26 +130,25 @@ sys_link(void)
     return -1;
 
   begin_op();
-  if((ip = namei(old)) == 0){   // get the old path inode
+  if((ip = namei(old)) == 0){
     end_op();
     return -1;
   }
 
   ilock(ip);
-  if(ip->type == T_DIR){    // cannot link to a directory
+  if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
     return -1;
   }
 
-  ip->nlink++;  // increase the link number
-  iupdate(ip);  // update the inode to the disk
+  ip->nlink++;
+  iupdate(ip);
   iunlock(ip);
-  // return the new path's parent inode
+
   if((dp = nameiparent(new, name)) == 0)
     goto bad;
   ilock(dp);
-  // write the new entry to new's parent directory's inode
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
     iunlockput(dp);
     goto bad;
@@ -259,8 +262,10 @@ create(char *path, short type, short major, short minor)
     return 0;
   }
 
-  if((ip = ialloc(dp->dev, type)) == 0)
-    panic("create: ialloc");
+  if((ip = ialloc(dp->dev, type)) == 0){
+    iunlockput(dp);
+    return 0;
+  }
 
   ilock(ip);
   ip->major = major;
@@ -269,58 +274,30 @@ create(char *path, short type, short major, short minor)
   iupdate(ip);
 
   if(type == T_DIR){  // Create . and .. entries.
-    dp->nlink++;  // for ".."
-    iupdate(dp);
     // No ip->nlink++ for ".": avoid cyclic ref count.
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
-      panic("create dots");
+      goto fail;
   }
 
   if(dirlink(dp, name, ip->inum) < 0)
-    panic("create: dirlink");
+    goto fail;
+
+  if(type == T_DIR){
+    // now that success is guaranteed:
+    dp->nlink++;  // for ".."
+    iupdate(dp);
+  }
 
   iunlockput(dp);
 
   return ip;
-}
 
-// recursively follow the symlinks - lab9-2
-// Caller must hold ip->lock
-// and when function returned, it holds ip->lock of returned ip
-static struct inode* follow_symlink(struct inode* ip) {
-  uint inums[NSYMLINK];
-  int i, j;
-  char target[MAXPATH];
-
-  for(i = 0; i < NSYMLINK; ++i) {
-    inums[i] = ip->inum;
-    // read the target path from symlink file
-    if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0) {
-      iunlockput(ip);
-      printf("open_symlink: open symlink failed\n");
-      return 0;
-    }
-    iunlockput(ip);
-
-    // get the inode of target path
-    if((ip = namei(target)) == 0) {
-      printf("open_symlink: path \"%s\" is not exist\n", target);
-      return 0;
-    }
-    for(j = 0; j <= i; ++j) {
-      if(ip->inum == inums[j]) {
-        printf("open_symlink: links form a cycle\n");
-        return 0;
-      }
-    }
-    ilock(ip);
-    if(ip->type != T_SYMLINK) {
-      return ip;
-    }
-  }
-
+ fail:
+  // something went wrong. de-allocate ip.
+  ip->nlink = 0;
+  iupdate(ip);
   iunlockput(ip);
-  printf("open_symlink: the depth of links reaches the limit\n");
+  iunlockput(dp);
   return 0;
 }
 
@@ -333,7 +310,8 @@ sys_open(void)
   struct inode *ip;
   int n;
 
-  if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
+  argint(1, &omode);
+  if((n = argstr(0, path, MAXPATH)) < 0)
     return -1;
 
   begin_op();
@@ -361,14 +339,6 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
-  }
-
-  // handle the symlink - lab9-2
-  if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
-    if((ip = follow_symlink(ip)) == 0) {
-      end_op();
-      return -1;
-    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -424,9 +394,9 @@ sys_mknod(void)
   int major, minor;
 
   begin_op();
+  argint(1, &major);
+  argint(2, &minor);
   if((argstr(0, path, MAXPATH)) < 0 ||
-     argint(1, &major) < 0 ||
-     argint(2, &minor) < 0 ||
      (ip = create(path, T_DEVICE, major, minor)) == 0){
     end_op();
     return -1;
@@ -468,7 +438,8 @@ sys_exec(void)
   int i;
   uint64 uargv, uarg;
 
-  if(argstr(0, path, MAXPATH) < 0 || argaddr(1, &uargv) < 0){
+  argaddr(1, &uargv);
+  if(argstr(0, path, MAXPATH) < 0) {
     return -1;
   }
   memset(argv, 0, sizeof(argv));
@@ -511,8 +482,7 @@ sys_pipe(void)
   int fd0, fd1;
   struct proc *p = myproc();
 
-  if(argaddr(0, &fdarray) < 0)
-    return -1;
+  argaddr(0, &fdarray);
   if(pipealloc(&rf, &wf) < 0)
     return -1;
   fd0 = -1;
@@ -531,34 +501,5 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
-  return 0;
-}
-
-// lab9-2
-uint64 sys_symlink(void) {
-  char target[MAXPATH], path[MAXPATH];
-  struct inode *ip;
-  int n;
-
-  if ((n = argstr(0, target, MAXPATH)) < 0
-    || argstr(1, path, MAXPATH) < 0) {
-    return -1;
-  }
-
-  begin_op();
-  // create the symlink's inode
-  if((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
-    end_op();
-    return -1;
-  }
-  // write the target path to the inode
-  if(writei(ip, 0, (uint64)target, 0, n) != n) {
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
-
-  iunlockput(ip);
-  end_op();
   return 0;
 }
