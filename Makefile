@@ -360,6 +360,8 @@ grade:
 ##
 ## FOR submissions
 ##
+diff:
+	git diff origin/fs HEAD > commit.patch
 
 submit-check:
 	@if ! test -d .git; then \
