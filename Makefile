@@ -323,7 +323,7 @@ grade:
 	./grade-lab-$(LAB) $(GRADEFLAGS)
 
 diff:
-	git diff origin/lock HEAD > commit.patch
+	git diff upstream/lock HEAD > commit.patch
 format:
 	python3 clang-format.py
 
