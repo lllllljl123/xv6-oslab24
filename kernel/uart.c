@@ -13,7 +13,7 @@
 // the UART control registers are memory-mapped
 // at address UART0. this macro returns the
 // address of one of the registers.
-#define Reg(reg) ((volatile unsigned char *)(UART0 + (reg)))
+#define Reg(reg) ((volatile unsigned char *)(UART0 + reg))
 
 // the UART control registers.
 // some have different meanings for
@@ -43,7 +43,7 @@ struct spinlock uart_tx_lock;
 #define UART_TX_BUF_SIZE 32
 char uart_tx_buf[UART_TX_BUF_SIZE];
 uint64 uart_tx_w; // write next to uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE]
-uint64 uart_tx_r; // read next from uart_tx_buf[uart_tx_r % UART_TX_BUF_SIZE]
+uint64 uart_tx_r; // read next from uart_tx_buf[uar_tx_r % UART_TX_BUF_SIZE]
 
 extern volatile int panicked; // from printf.c
 
@@ -92,17 +92,21 @@ uartputc(int c)
     for(;;)
       ;
   }
-  while(uart_tx_w == uart_tx_r + UART_TX_BUF_SIZE){
-    // buffer is full.
-    // wait for uartstart() to open up space in the buffer.
-    sleep(&uart_tx_r, &uart_tx_lock);
-  }
-  uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE] = c;
-  uart_tx_w += 1;
-  uartstart();
-  release(&uart_tx_lock);
-}
 
+  while(1){
+    if(uart_tx_w == uart_tx_r + UART_TX_BUF_SIZE){
+      // buffer is full.
+      // wait for uartstart() to open up space in the buffer.
+      sleep(&uart_tx_r, &uart_tx_lock);
+    } else {
+      uart_tx_buf[uart_tx_w % UART_TX_BUF_SIZE] = c;
+      uart_tx_w += 1;
+      uartstart();
+      release(&uart_tx_lock);
+      return;
+    }
+  }
+}
 
 // alternate version of uartputc() that doesn't 
 // use interrupts, for use by kernel printf() and
@@ -136,7 +140,6 @@ uartstart()
   while(1){
     if(uart_tx_w == uart_tx_r){
       // transmit buffer is empty.
-      ReadReg(ISR);
       return;
     }
     
@@ -172,7 +175,7 @@ uartgetc(void)
 
 // handle a uart interrupt, raised because input has
 // arrived, or the uart is ready for more output, or
-// both. called from devintr().
+// both. called from trap.c.
 void
 uartintr(void)
 {
