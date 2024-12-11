@@ -401,17 +401,55 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  // lab6 add
+  bn -= NINDIRECT;
+  if (bn < NDOUBLYINDIRECT) {
+    addr = ip->addrs[NDIRECT + 1];
+    if (addr == 0) {
+      addr = balloc(ip->dev);
+      ip->addrs[NDIRECT + 1] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+
+    uint second_index = bn / NINDIRECT;
+    addr = a[second_index];
+    if (addr == 0) {
+      addr = balloc(ip->dev);
+      a[second_index] = addr;
+      log_write(bp);
+    }
+    brelse(bp);
+
+    // 读取二级间接块
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+
+    // 计算最终的块索引
+    uint final_index = bn % NINDIRECT;
+    addr = a[final_index];
+    if (addr == 0) {
+      addr = balloc(ip->dev);
+      a[final_index] = addr;
+      log_write(bp);
+    }
+    brelse(bp);
+
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
 // Truncate inode (discard contents).
 // Caller must hold ip->lock.
+// 释放inode数据块
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -432,7 +470,36 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
-  ip->size = 0;
+  // 释放 doubly-indirect block
+  if (ip->addrs[NDIRECT + 1]) {
+    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a = (uint *)bp->data;
+
+    for (j = 0; j < NINDIRECT; j++) {
+      if (a[j]) {
+        // 读取二级间接块
+        bp2 = bread(ip->dev, a[j]);
+        a2 = (uint *)bp2->data;
+
+        for (k = 0; k < NINDIRECT; k++) {
+          if (a2[k]) {
+            bfree(ip->dev, a2[k]);  // 释放数据块
+            a2[k] = 0;              // 清除二级指针
+          }
+        }
+
+        brelse(bp2);
+        bfree(ip->dev, a[j]);  // 释放二级间接块
+        a[j] = 0;              // 清除一级指针
+      }
+    }
+
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);  // 释放双重间接块
+    ip->addrs[NDIRECT + 1] = 0;              // 清除双重间接块指针
+  }
+
+  ip->size = 0;  
   iupdate(ip);
 }
 

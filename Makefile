@@ -175,6 +175,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_symlinktest\
 
 
 
@@ -321,7 +322,7 @@ grade:
 ## FOR web handin
 ##
 diff:
-	git diff origin/fs HEAD > commit.patch
+	git diff upstream/fs HEAD > commit.patch
 
 submit-check:
 

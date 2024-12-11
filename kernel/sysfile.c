@@ -303,18 +303,54 @@ sys_open(void)
       end_op();
       return -1;
     }
-  } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+  }
+  else {
+    int symlink_depth = 0;
+    int follow_symlink = 1;
+
+    while (follow_symlink) {
+      if ((ip = namei(path)) == 0) {  // 尝试解析路径
+        end_op();
+        return -1;
+      }
+
+      ilock(ip);
+
+      // 检查是否为符号链接并且允许跟随符号链接
+      if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+        symlink_depth++;
+
+        // 防止符号链接循环过深
+        if (symlink_depth > NSYMLINK) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+
+        // 读取符号链接的目标路径并更新 path
+        char new_path[MAXPATH];
+        if (readi(ip, 0, (uint64)new_path, 0, MAXPATH) < 0) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+
+        // 释放当前的 inode，并更新 path 以继续解析新的路径
+        iunlockput(ip);
+        safestrcpy(path, new_path, MAXPATH);
+      } else {
+          follow_symlink = 0;  // 如果不是符号链接或不需要跟随，退出循环
+        }
     }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+
+    // 检查目标 inode 是否为目录，并确认打开模式
+    if (ip->type == T_DIR && omode != O_RDONLY) {
       iunlockput(ip);
       end_op();
       return -1;
     }
-  }
+}
+
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -323,10 +359,11 @@ sys_open(void)
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
-    if(f)
+    if(f){
       fileclose(f);
-    iunlockput(ip);
-    end_op();
+      iunlockput(ip);
+      end_op();
+    }
     return -1;
   }
 
@@ -482,5 +519,32 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 sys_symlink(void){
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  // 绑定参数
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0 ){
+    return -1;
+  }
+
+  begin_op(); 
+
+  ip = create(path, T_SYMLINK, 0, 0);     // 创建一个新的inode，类型为T_SYMLINK，指向path文件
+  if (ip == 0) {
+    end_op();
+    return -1;
+  }
+
+  if (writei(ip, 0, (uint64)target, 0, strlen(target)) < 0) {     // 将target路径写入inode
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
   return 0;
 }
