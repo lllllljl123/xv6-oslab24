@@ -434,73 +434,108 @@ int wait(uint64 addr) {
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
 void scheduler(void) {
-  struct proc *p;
-  struct cpu *c = mycpu();
+    struct proc *p;
+    struct cpu *c = mycpu();
 
-  c->proc = 0;
-  for (;;) {
-    // Avoid deadlock by ensuring that devices can interrupt.
-    intr_on();
+    c->proc = 0;
+    for (;;) {
+        // Avoid deadlock by ensuring that devices can interrupt.
+        intr_on();
 
-    int found = 0;
-    
-    // Note here that we have two different scheduling algorithms
-    #if defined RR
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // TODO: on state change
-        on_state_change(p->state, RUNNING, p);
+        int found = 0;
 
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+        // Note here that we have two different scheduling algorithms
+        #if defined RR
+        // Round Robin Scheduling
+        for (p = proc; p < &proc[NPROC]; p++) {
+            acquire(&p->lock);
+            if (p->state == RUNNABLE) {
+                // TODO: on state change
+                on_state_change(p->state, RUNNING, p);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
+                // Switch to chosen process. It is the process's job
+                // to release its lock and then reacquire it
+                // before jumping back to us.
+                p->state = RUNNING;
+                c->proc = p;
+                swtch(&c->context, &p->context);
 
-        found = 1;
-      }
-      release(&p->lock);
+                // Process is done running for now.
+                // It should have changed its p->state before coming back.
+                c->proc = 0;
+
+                found = 1;
+            }
+            release(&p->lock);
+        }
+        #elif defined PR
+        // Priority scheduling, iterating over max_p to find process with highest priority
+        struct proc *highest_prio_proc = NULL;
+        int highest_priority = 4;
+        for (p = proc; p < &proc[NPROC]; p++) {
+            if (p->state == RUNNABLE && p->priority < highest_priority) {
+                highest_priority = p->priority;
+                highest_prio_proc = p;
+            }
+        }
+
+        if (highest_prio_proc) {
+            acquire(&highest_prio_proc->lock);
+            if (highest_prio_proc->state == RUNNABLE) {
+                on_state_change(highest_prio_proc->state, RUNNING, highest_prio_proc);
+
+                highest_prio_proc->state = RUNNING;
+                c->proc = highest_prio_proc;
+                swtch(&c->context, &highest_prio_proc->context);
+
+                // Process is done running for now.
+                // It should have changed its p->state before coming back.
+                c->proc = 0;
+
+                found = 1;
+            }
+            release(&highest_prio_proc->lock);
+        }
+        #elif defined SRTF
+        // Shortest Remaining Time First Scheduling
+        struct proc *shortest_proc = NULL;
+        int min_remaining_time = -1;
+        for (p = proc; p < &proc[NPROC]; p++) {
+            acquire(&p->lock);
+            if (p->state == RUNNABLE) {
+                if (shortest_proc == NULL || p->remaining_time < min_remaining_time) {
+                    shortest_proc = p;
+                    min_remaining_time = p->remaining_time;
+                }
+            }
+            release(&p->lock);
+        }
+
+        if (shortest_proc) {
+            acquire(&shortest_proc->lock);
+            if (shortest_proc->state == RUNNABLE) {
+                on_state_change(shortest_proc->state, RUNNING, shortest_proc);
+
+                shortest_proc->state = RUNNING;
+                c->proc = shortest_proc;
+                swtch(&c->context, &shortest_proc->context);
+
+                // Process is done running for now.
+                // It should have changed its p->state before coming back.
+                c->proc = 0;
+            }
+            release(&shortest_proc->lock);
+        }
+        #endif
+
+        if (!found) {
+            // No runnable process found, so we can put the CPU in a low power state
+            intr_on();
+            asm volatile("wfi");
+        }
     }
-    #elif defined PR
-    // Priority scheduling, iterating over max_p to find process with highest priority
-    struct proc *highest_prio_proc = NULL;
-    int highest_priority = 4;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      if (p->state == RUNNABLE && p->priority < highest_priority) {
-        highest_priority = p->priority;
-        highest_prio_proc = p;
-      }
-    }
-
-    if (highest_prio_proc) {
-      acquire(&highest_prio_proc->lock);
-      if (highest_prio_proc->state == RUNNABLE) { 
-        on_state_change(highest_prio_proc->state, RUNNING, highest_prio_proc);
-
-        highest_prio_proc->state = RUNNING;
-        c->proc = highest_prio_proc;
-        swtch(&c->context, &highest_prio_proc->context);
-
-        c->proc = 0;
-        found = 1;
-      }
-      release(&highest_prio_proc->lock);
-    }
-
-    #endif
-    // The same as Round-Robin, if no RUNNABLE process is found, we will wait for interrupt
-    if (found == 0) {
-      intr_on();
-      asm volatile("wfi");
-    }
-  }
 }
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores

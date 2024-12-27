@@ -114,8 +114,14 @@ struct proc {
   uint64 end;                  // end time of a process state
 
   int priority;                // Process priority, within [0,1,2,3], 0 is the highest and 3 is the lowest
+
+  // 实现SRTF字段
+  uint64 total_time;           // 需要运行总时间
+  uint64 remaining_time;       // 剩余时间
+
 };
 
 // TODO: using RR for Round-Robin, using PR for Priority-Scheduling
 // #define RR
-#define PR
+// #define PR
+#define SRTF

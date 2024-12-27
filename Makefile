@@ -5,6 +5,7 @@
 
 -include conf/lab.mk
 
+
 K=kernel
 U=user
 
