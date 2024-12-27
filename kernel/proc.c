@@ -526,6 +526,7 @@ void scheduler(void) {
             }
             release(&shortest_proc->lock);
         }
+        
         #endif
 
         if (!found) {
