@@ -1,0 +1,368 @@
+diff --git a/Makefile b/Makefile
+index cd79933..2db6343 100644
+--- a/Makefile
++++ b/Makefile
+@@ -175,6 +175,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_symlinktest\
+ 
+ 
+ 
+@@ -321,7 +322,7 @@ grade:
+ ## FOR web handin
+ ##
+ diff:
+-	git diff origin/fs HEAD > commit.patch
++	git diff upstream/fs HEAD > commit.patch
+ 
+ submit-check:
+ 
+diff --git a/commit.patch b/commit.patch
+new file mode 100644
+index 0000000..e69de29
+diff --git a/kernel/fcntl.h b/kernel/fcntl.h
+index 44861b9..2325664 100644
+--- a/kernel/fcntl.h
++++ b/kernel/fcntl.h
+@@ -3,3 +3,4 @@
+ #define O_RDWR    0x002
+ #define O_CREATE  0x200
+ #define O_TRUNC   0x400
++#define O_NOFOLLOW 0x004 //lab6
+diff --git a/kernel/file.h b/kernel/file.h
+index b076d1d..5c4eb3a 100644
+--- a/kernel/file.h
++++ b/kernel/file.h
+@@ -26,7 +26,7 @@ struct inode {
+   short minor;
+   short nlink;
+   uint size;
+-  uint addrs[NDIRECT+1];
++  uint addrs[NDIRECT+2];
+ };
+ 
+ // map major device number to device functions.
+diff --git a/kernel/fs.c b/kernel/fs.c
+index f33553a..dabb8d2 100644
+--- a/kernel/fs.c
++++ b/kernel/fs.c
+@@ -401,17 +401,55 @@ bmap(struct inode *ip, uint bn)
+     return addr;
+   }
+ 
++  // lab6 add
++  bn -= NINDIRECT;
++  if (bn < NDOUBLYINDIRECT) {
++    addr = ip->addrs[NDIRECT + 1];
++    if (addr == 0) {
++      addr = balloc(ip->dev);
++      ip->addrs[NDIRECT + 1] = addr;
++    }
++    bp = bread(ip->dev, addr);
++    a = (uint *)bp->data;
++
++    uint second_index = bn / NINDIRECT;
++    addr = a[second_index];
++    if (addr == 0) {
++      addr = balloc(ip->dev);
++      a[second_index] = addr;
++      log_write(bp);
++    }
++    brelse(bp);
++
++    // 读取二级间接块
++    bp = bread(ip->dev, addr);
++    a = (uint *)bp->data;
++
++    // 计算最终的块索引
++    uint final_index = bn % NINDIRECT;
++    addr = a[final_index];
++    if (addr == 0) {
++      addr = balloc(ip->dev);
++      a[final_index] = addr;
++      log_write(bp);
++    }
++    brelse(bp);
++
++    return addr;
++  }
++
+   panic("bmap: out of range");
+ }
+ 
+ // Truncate inode (discard contents).
+ // Caller must hold ip->lock.
++// 释放inode数据块
+ void
+ itrunc(struct inode *ip)
+ {
+-  int i, j;
+-  struct buf *bp;
+-  uint *a;
++  int i, j, k;
++  struct buf *bp, *bp2;
++  uint *a, *a2;
+ 
+   for(i = 0; i < NDIRECT; i++){
+     if(ip->addrs[i]){
+@@ -432,7 +470,36 @@ itrunc(struct inode *ip)
+     ip->addrs[NDIRECT] = 0;
+   }
+ 
+-  ip->size = 0;
++  // 释放 doubly-indirect block
++  if (ip->addrs[NDIRECT + 1]) {
++    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
++    a = (uint *)bp->data;
++
++    for (j = 0; j < NINDIRECT; j++) {
++      if (a[j]) {
++        // 读取二级间接块
++        bp2 = bread(ip->dev, a[j]);
++        a2 = (uint *)bp2->data;
++
++        for (k = 0; k < NINDIRECT; k++) {
++          if (a2[k]) {
++            bfree(ip->dev, a2[k]);  // 释放数据块
++            a2[k] = 0;              // 清除二级指针
++          }
++        }
++
++        brelse(bp2);
++        bfree(ip->dev, a[j]);  // 释放二级间接块
++        a[j] = 0;              // 清除一级指针
++      }
++    }
++
++    brelse(bp);
++    bfree(ip->dev, ip->addrs[NDIRECT + 1]);  // 释放双重间接块
++    ip->addrs[NDIRECT + 1] = 0;              // 清除双重间接块指针
++  }
++
++  ip->size = 0;  
+   iupdate(ip);
+ }
+ 
+diff --git a/kernel/fs.h b/kernel/fs.h
+index 139dcc9..93ca0f6 100644
+--- a/kernel/fs.h
++++ b/kernel/fs.h
+@@ -24,9 +24,11 @@ struct superblock {
+ 
+ #define FSMAGIC 0x10203040
+ 
+-#define NDIRECT 12
++#define NDIRECT 11
+ #define NINDIRECT (BSIZE / sizeof(uint))
+-#define MAXFILE (NDIRECT + NINDIRECT)
++// lab6
++#define MAXFILE (NDIRECT + NINDIRECT + NDOUBLYINDIRECT)
++#define NSYMLINK 10
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -35,7 +37,7 @@ struct dinode {
+   short minor;          // Minor device number (T_DEVICE only)
+   short nlink;          // Number of links to inode in file system
+   uint size;            // Size of file (bytes)
+-  uint addrs[NDIRECT+1];   // Data block addresses
++  uint addrs[NDIRECT+2];   // Data block addresses
+ };
+ 
+ // Inodes per block.
+@@ -53,6 +55,8 @@ struct dinode {
+ // Directory is a file containing a sequence of dirent structures.
+ #define DIRSIZ 14
+ 
++#define NDOUBLYINDIRECT (NINDIRECT * NINDIRECT)
++
+ struct dirent {
+   ushort inum;
+   char name[DIRSIZ];
+diff --git a/kernel/stat.h b/kernel/stat.h
+index 19543af..d99ff5d 100644
+--- a/kernel/stat.h
++++ b/kernel/stat.h
+@@ -1,6 +1,7 @@
+ #define T_DIR     1   // Directory
+ #define T_FILE    2   // File
+ #define T_DEVICE  3   // Device
++#define T_SYMLINK 4   // lab6 symbolic link
+ 
+ struct stat {
+   int dev;     // File system's disk device
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index c1b3670..da12101 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -104,6 +104,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
++// lab6
++extern uint64 sys_symlink(void);
+ 
+ static uint64 (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -127,6 +129,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++// lab6
++[SYS_symlink] sys_symlink,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..02cfd50 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++// lab6
++#define SYS_symlink  22
+\ No newline at end of file
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+index 5dc453b..ae57f24 100644
+--- a/kernel/sysfile.c
++++ b/kernel/sysfile.c
+@@ -303,18 +303,54 @@ sys_open(void)
+       end_op();
+       return -1;
+     }
+-  } else {
+-    if((ip = namei(path)) == 0){
+-      end_op();
+-      return -1;
++  }
++  else {
++    int symlink_depth = 0;
++    int follow_symlink = 1;
++
++    while (follow_symlink) {
++      if ((ip = namei(path)) == 0) {  // 尝试解析路径
++        end_op();
++        return -1;
++      }
++
++      ilock(ip);
++
++      // 检查是否为符号链接并且允许跟随符号链接
++      if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
++        symlink_depth++;
++
++        // 防止符号链接循环过深
++        if (symlink_depth > NSYMLINK) {
++          iunlockput(ip);
++          end_op();
++          return -1;
++        }
++
++        // 读取符号链接的目标路径并更新 path
++        char new_path[MAXPATH];
++        if (readi(ip, 0, (uint64)new_path, 0, MAXPATH) < 0) {
++          iunlockput(ip);
++          end_op();
++          return -1;
++        }
++
++        // 释放当前的 inode，并更新 path 以继续解析新的路径
++        iunlockput(ip);
++        safestrcpy(path, new_path, MAXPATH);
++      } else {
++          follow_symlink = 0;  // 如果不是符号链接或不需要跟随，退出循环
++        }
+     }
+-    ilock(ip);
+-    if(ip->type == T_DIR && omode != O_RDONLY){
++
++    // 检查目标 inode 是否为目录，并确认打开模式
++    if (ip->type == T_DIR && omode != O_RDONLY) {
+       iunlockput(ip);
+       end_op();
+       return -1;
+     }
+-  }
++}
++
+ 
+   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+     iunlockput(ip);
+@@ -323,10 +359,11 @@ sys_open(void)
+   }
+ 
+   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+-    if(f)
++    if(f){
+       fileclose(f);
+-    iunlockput(ip);
+-    end_op();
++      iunlockput(ip);
++      end_op();
++    }
+     return -1;
+   }
+ 
+@@ -484,3 +521,30 @@ sys_pipe(void)
+   }
+   return 0;
+ }
++
++uint64 sys_symlink(void){
++  char target[MAXPATH], path[MAXPATH];
++  struct inode *ip;
++
++  // 绑定参数
++  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0 ){
++    return -1;
++  }
++
++  begin_op(); 
++
++  ip = create(path, T_SYMLINK, 0, 0);     // 创建一个新的inode，类型为T_SYMLINK，指向path文件
++  if (ip == 0) {
++    end_op();
++    return -1;
++  }
++
++  if (writei(ip, 0, (uint64)target, 0, strlen(target)) < 0) {     // 将target路径写入inode
++    end_op();
++    return -1;
++  }
++
++  iunlockput(ip);
++  end_op();
++  return 0;
++}
+\ No newline at end of file
+diff --git a/mkfs/mkfs b/mkfs/mkfs
+new file mode 100755
+index 0000000..e50e198
+Binary files /dev/null and b/mkfs/mkfs differ
+diff --git a/user/user.h b/user/user.h
+index b71ecda..a230b5f 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -23,6 +23,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++// lab6
++int symlink(char *target,char *path);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..70ba10c 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,4 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("symlink");  # lab6
+\ No newline at end of file
